@@ -35,7 +35,7 @@ pub async fn upload(
     Ok((
         StatusCode::CREATED,
         Json(json!({
-            "share_url": app.share_url(&share.id),
+            "share_url": app.share_url(&share.code),
             "created_at": share.created_at,
             "expires_at": share.expires_at,
             "remaining_downloads": share.remaining_downloads,

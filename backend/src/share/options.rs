@@ -69,18 +69,18 @@ pub(super) fn prompt(
         "Expiry: {expiry}, max downloads: {downloads}, share password: {protection}"
     )?;
     loop {
-        let Some(answer) = ask(input, output, "Upload [y/N]? ")? else {
+        let Some(answer) = ask(input, output, "Upload [Y/n]? ")? else {
             return Ok(None);
         };
         match answer.trim().to_ascii_lowercase().as_str() {
-            "y" | "yes" => {
+            "" | "y" | "yes" => {
                 return Ok(Some(ShareOptions {
                     expiry_days,
                     max_downloads,
                     password,
                 }));
             }
-            "" | "n" | "no" => return Ok(None),
+            "n" | "no" => return Ok(None),
             _ => writeln!(output, "Enter y or n.")?,
         }
     }
@@ -139,12 +139,12 @@ mod tests {
 
     #[test]
     fn uses_the_web_defaults() {
-        let options = prompt(&mut &b"\n\n\ny\n"[..], &mut Vec::new())
-            .unwrap()
-            .unwrap();
+        let mut output = Vec::new();
+        let options = prompt(&mut &b"\n\n\n\n"[..], &mut output).unwrap().unwrap();
         assert_eq!(options.expiry_days, Some(7));
         assert_eq!(options.max_downloads, None);
         assert_eq!(options.password, None);
+        assert!(output.ends_with(b"Upload [Y/n]? "));
     }
 
     #[test]
@@ -166,8 +166,8 @@ mod tests {
     }
 
     #[test]
-    fn requires_affirmative_confirmation() {
-        for input in ["", "\n\n\n", "\n\n\n\n", "\n\n\nno\n"] {
+    fn cancels_on_eof_or_decline() {
+        for input in ["", "\n\n\n", "\n\n\nN\n", "\n\n\nno\n"] {
             assert!(
                 prompt(&mut input.as_bytes(), &mut Vec::new())
                     .unwrap()

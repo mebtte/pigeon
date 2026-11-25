@@ -17,16 +17,18 @@ test('keeps links inside the configured base path', () => {
   assert.equal(appPath('/pigeon'), '/pigeon');
 });
 
-const shareId = '0123456789abcdef0123456789abcdef';
+const shareId = 'Ab2-_k';
+const shareHash = `#/s/${shareId}`;
 
-test('reads home, login and canonical sharing hash routes', () => {
+test('reads home, login and six-character sharing hash routes', () => {
   assert.deepEqual(readRoute(''), { page: 'home' });
   assert.deepEqual(readRoute('#/'), { page: 'home' });
   assert.deepEqual(readRoute('#/login'), { page: 'login' });
-  assert.deepEqual(readRoute(`#/sharing/${shareId}`), { page: 'sharing', id: shareId, password: '' });
+  assert.deepEqual(readRoute(shareHash), { page: 'sharing', id: shareId, password: '' });
   for (const hash of [
-    '#/login/', '#/unknown', '#password=secret', '#/sharing', '#/sharing/abc',
-    `#/sharing/${shareId.toUpperCase()}`, `#/sharing/${shareId}/`, `#/sharing/${shareId}0`,
+    '#/login/', '#/unknown', '#p=secret',
+    `#${shareId}`, `#/sharing/${shareId}`, `${shareHash}/`,
+    shareHash.slice(0, -1), `${shareHash}X`, shareHash.replace('-', '+'),
   ]) {
     assert.deepEqual(readRoute(hash), { page: 'notFound' }, hash);
   }
@@ -34,12 +36,12 @@ test('reads home, login and canonical sharing hash routes', () => {
 
 test('round-trips encoded share passwords in root and nested hash links', () => {
   const password = 'a+b&c=#?';
-  for (const base of ['/', '/pigeon/team']) {
-    const link = `https://example.com${base}#/sharing/${shareId}`;
+  for (const base of ['/', '/pigeon/team/']) {
+    const link = `https://example.com${base}${shareHash}`;
     const url = new URL(shareLinkWithPassword(link, password));
     assert.equal(url.pathname, base);
     assert.equal(url.search, '');
-    assert.equal(url.hash, `#/sharing/${shareId}?password=a%2Bb%26c%3D%23%3F`);
+    assert.equal(url.hash, `${shareHash}?p=a%2Bb%26c%3D%23%3F`);
     assert.deepEqual(readRoute(url.hash), { page: 'sharing', id: shareId, password });
     assert.equal(shareLinkWithPassword(url.href, ''), link);
   }

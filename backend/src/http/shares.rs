@@ -40,7 +40,7 @@ pub(super) async fn metadata(
     let share = storage_work(move || store.share(&id)).await?;
     let is_public = !share.requires_password;
     Ok(Json(ShareMetadata {
-        id: share.id,
+        id: share.code,
         requires_password: share.requires_password,
         filename: is_public.then_some(share.filename),
         size_bytes: is_public.then_some(share.size_bytes),

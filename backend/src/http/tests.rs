@@ -10,7 +10,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::store::NewShare;
+use crate::store::{NewShare, is_share_code};
 
 use super::*;
 
@@ -46,7 +46,7 @@ impl TestData {
                 },
             )
             .unwrap()
-            .id
+            .code
     }
 
     fn router(&self, prefix: &str) -> Router {
@@ -337,7 +337,9 @@ async fn anonymous_download_survives_last_extraction_and_same_data_restart() {
     let upload = read_json(upload).await;
     assert!(upload["expires_at"].is_null());
     let share = upload["share_url"].as_str().unwrap();
-    let id = share.strip_prefix("/pigeon/#/sharing/").unwrap();
+    let id = share.strip_prefix("/pigeon/#/s/").unwrap();
+    assert!(is_share_code(id));
+
     let metadata_path = format!("/pigeon/api/shares/{id}");
     let extract = format!("{metadata_path}/download-links");
     let metadata = call(&app, "GET", &metadata_path, &[], Body::empty()).await;

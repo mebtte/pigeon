@@ -2,7 +2,9 @@ use rusqlite::params;
 
 use super::{Result, Store, StoreError, unix_seconds};
 
-const ACTIVE_MATCH: &str = "WHERE uploaded_by = ?1
+const ACTIVE_SHARES: &str = "FROM shares
+    JOIN share_codes ON share_codes.share_id = shares.id
+    WHERE uploaded_by = ?1
     AND (expires_at IS NULL OR expires_at > ?2)
     AND (remaining_downloads IS NULL OR remaining_downloads > 0)
     AND (?3 = '' OR instr(lower(filename), lower(?3)) > 0)";
@@ -45,7 +47,7 @@ impl Store {
         let now = unix_seconds()?;
         let tx = state.conn.transaction()?;
         let total: u64 = tx.query_row(
-            &format!("SELECT count(*) FROM shares {ACTIVE_MATCH}"),
+            &format!("SELECT count(*) {ACTIVE_SHARES}"),
             params![owner, now, search],
             |row| row.get(0),
         )?;
@@ -57,10 +59,10 @@ impl Store {
 
         let items = {
             let mut query = tx.prepare_cached(&format!(
-                "SELECT id, filename, size_bytes, created_at, expires_at,
+                "SELECT code, filename, size_bytes, created_at, expires_at,
                         remaining_downloads, password IS NOT NULL
-                 FROM shares {ACTIVE_MATCH}
-                 ORDER BY created_at DESC, id DESC LIMIT ?4 OFFSET ?5"
+                 {ACTIVE_SHARES}
+                 ORDER BY created_at DESC, shares.id DESC LIMIT ?4 OFFSET ?5"
             ))?;
             let rows = query.query_map(params![owner, now, search, limit, offset], |row| {
                 Ok(ListedShare {

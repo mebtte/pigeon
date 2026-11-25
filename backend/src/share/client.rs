@@ -1,5 +1,6 @@
 use std::{error::Error, fs::File, time::Duration};
 
+use futures_util::StreamExt;
 use reqwest::{
     Body, RequestBuilder, Response, StatusCode, Url,
     header::{HeaderValue, RETRY_AFTER},
@@ -11,7 +12,9 @@ use serde_json::json;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
-use super::ShareOptions;
+use crate::store::is_share_code;
+
+use super::{ShareOptions, progress::UploadProgress};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -101,7 +104,14 @@ impl Client {
             form = form.text("password", password.clone());
         }
         let file = tokio::fs::File::from_std(file).take(size);
-        let body = Body::wrap_stream(ReaderStream::new(file));
+        let mut progress = UploadProgress::new(size);
+        // Count file bytes as the HTTP client pulls them into the multipart body.
+        let stream = ReaderStream::new(file).inspect(move |chunk| {
+            if let Ok(bytes) = chunk {
+                progress.advance(bytes.len());
+            }
+        });
+        let body = Body::wrap_stream(stream);
         let part = Part::stream_with_length(body, size)
             .file_name(filename.to_owned())
             .mime_str("application/octet-stream")?;
@@ -188,21 +198,15 @@ fn share_url(endpoint: &Url, value: &str) -> Option<Url> {
         return None;
     }
     let url = endpoint.join(value).ok()?;
-    let id = url.fragment()?.strip_prefix("/sharing/")?;
-    (url.origin() == endpoint.origin()
-        && url.query().is_none()
-        && id.len() == 32
-        && id
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
-    .then_some(url)
+    let id = url.fragment()?.strip_prefix("/s/")?;
+    (url.origin() == endpoint.origin() && url.query().is_none() && is_share_code(id)).then_some(url)
 }
 
 pub(super) fn link_with_password(link: &Url, password: &str) -> Url {
     let mut url = link.clone();
     // Match the web app's fragment format so HTTP requests omit the password.
     if let Some(route) = link.fragment() {
-        url.set_fragment(Some(&format!("{route}?password={password}")));
+        url.set_fragment(Some(&format!("{route}?p={password}")));
     }
     url
 }
@@ -345,22 +349,35 @@ mod tests {
     }
 
     #[test]
-    fn resolves_the_share_url_and_puts_the_password_in_the_fragment() {
+    fn resolves_the_short_share_url_and_puts_the_password_in_the_fragment() {
         let endpoint = parse_endpoint("https://example.com/pigeon").unwrap();
-        let relative = "/pigeon/#/sharing/0123456789abcdef0123456789abcdef";
+        let relative = "/pigeon/#/s/aB3_-9";
         let link = share_url(&endpoint, relative).unwrap();
         assert_eq!(link.as_str(), format!("https://example.com{relative}"));
+        let protected = link_with_password(&link, "Ab12");
         assert_eq!(
-            link_with_password(&link, "Ab12").as_str(),
-            format!("https://example.com{relative}?password=Ab12")
+            protected.as_str(),
+            format!("https://example.com{relative}?p=Ab12")
         );
-        assert!(
-            share_url(
-                &endpoint,
-                "//other.example/#/sharing/0123456789abcdef0123456789abcdef"
-            )
-            .is_none()
-        );
-        assert!(share_url(&endpoint, "/pigeon/#/login").is_none());
+        assert_eq!(protected.query(), None);
+    }
+
+    #[test]
+    fn rejects_invalid_share_urls() {
+        let endpoint = parse_endpoint("https://example.com/pigeon").unwrap();
+        for relative in [
+            "//other.example/#/s/aB3_-9",
+            "/pigeon/?secret=value#/s/aB3_-9",
+            "/pigeon/#/s/aB3_-9?p=Ab12",
+            "/pigeon/#/s/aB3_-90",
+            "/pigeon/#/s/aB3_-",
+            "/pigeon/#/s/aB+_-9",
+            "/pigeon/#/s/aB/_-9",
+            "/pigeon/#/s/aB3_-9/",
+            "/pigeon/#aB3_-9",
+            "/pigeon/#/login",
+        ] {
+            assert!(share_url(&endpoint, relative).is_none(), "{relative}");
+        }
     }
 }

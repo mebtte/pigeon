@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener
-from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parent.parent
 HTTP = build_opener(ProxyHandler({}))
@@ -41,7 +40,7 @@ def expect_not_found(request):
 
 
 def check_request_logs(origin, log, username, password, token):
-    share_id = uuid4().hex
+    share_id = "q7_K2V"
     query_value = "pigeon-private-query-value"
     authorization = "pigeon-private-authorization-value"
     extract = Request(

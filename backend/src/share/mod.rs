@@ -1,9 +1,10 @@
 mod archive;
 mod client;
 mod options;
+mod progress;
 
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::PathBuf,
 };
 
@@ -54,12 +55,29 @@ pub(crate) async fn run(args: ShareArguments) -> Result<(), Box<dyn std::error::
     let _ = client.logout(&token).await;
 
     let link = result?;
-    let mut output = io::stdout().lock();
-    writeln!(output, "{link}")?;
-    if let Some(password) = options.password.as_deref() {
-        writeln!(output, "{}", link_with_password(&link, password))?;
-    }
+    print_links(&link, options.password.as_deref())?;
     Ok(())
+}
+
+fn print_links(link: &reqwest::Url, password: Option<&str>) -> io::Result<()> {
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let show_labels = stdout.is_terminal() && stderr.is_terminal();
+    let mut output = stdout.lock();
+
+    // Keep labels on the terminal so each stdout line remains a copyable URL.
+    if show_labels {
+        let _ = writeln!(stderr.lock(), "\nShare created\n\nShare link");
+    }
+    writeln!(output, "{link}")?;
+    if let Some(password) = password {
+        if show_labels {
+            output.flush()?;
+            let _ = writeln!(stderr.lock(), "\nShare link with password");
+        }
+        writeln!(output, "{}", link_with_password(link, password))?;
+    }
+    output.flush()
 }
 
 async fn upload(

@@ -2,34 +2,43 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use rusqlite::{TransactionBehavior, params};
+use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
-use super::{Result, SHARE_ID_BYTES, State, Store, StoreError, is_hex, unix_seconds};
+use super::{
+    Result, SHARE_ID_BYTES, State, Store, StoreError, is_hex, is_share_code, unix_seconds,
+};
 
 const CLEANUP_BATCH: usize = 128;
 
 impl Store {
-    pub fn delete_share(&self, id: &str, owner: &str) -> Result<()> {
-        if !is_hex(id, SHARE_ID_BYTES) {
+    pub fn delete_share(&self, code: &str, owner: &str) -> Result<()> {
+        if !is_share_code(code) {
             return Err(StoreError::NotFound);
         }
         let mut state = self.inner.lock();
         let tx = state
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let matched = tx.execute(
-            "UPDATE shares SET remaining_downloads = 0 WHERE id = ?1 AND uploaded_by = ?2",
-            params![id, owner],
-        )?;
-        if matched == 0 {
+        let id = tx
+            .query_row(
+                "UPDATE shares SET remaining_downloads = 0
+                 WHERE id = (SELECT share_id FROM share_codes WHERE code = ?1)
+                    AND uploaded_by = ?2
+                 RETURNING id",
+                params![code, owner],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .ok_or(StoreError::NotFound)?;
+        if !is_hex(&id, SHARE_ID_BYTES) {
             return Err(StoreError::NotFound);
         }
         // Close the share and invalidate every outstanding URL in one commit.
-        tx.execute("DELETE FROM download_links WHERE share_id = ?1", [id])?;
+        tx.execute("DELETE FROM download_links WHERE share_id = ?1", [&id])?;
         tx.commit()?;
 
-        if !state.active_downloads.contains_key(id)
-            && self.remove_share_file_and_row(&state, id).is_err()
+        if !state.active_downloads.contains_key(&id)
+            && self.remove_share_file_and_row(&state, &id).is_err()
         {
             tracing::warn!("Revoked share cleanup failed and will be retried");
         }

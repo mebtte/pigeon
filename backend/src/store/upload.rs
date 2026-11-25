@@ -3,11 +3,11 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rusqlite::params;
+use rusqlite::{TransactionBehavior, params};
 
 use super::{
     Inner, NewShare, Result, SHARE_ID_BYTES, Share, Store, StoreError, private_file, random_hex,
-    unix_seconds,
+    share_codes, unix_seconds,
 };
 
 pub struct StagedUpload {
@@ -93,7 +93,7 @@ impl Store {
 
         // Publish the complete file before the row. A crash between the two
         // leaves an orphan that the next startup will reclaim.
-        let state = self.inner.lock();
+        let mut state = self.inner.lock();
         let (id, target) = loop {
             let id = random_hex::<SHARE_ID_BYTES>()?;
             let target = self.inner.files_dir.join(&id);
@@ -117,11 +117,15 @@ impl Store {
         };
         fs::rename(&stage.path, &target)?;
         stage.moved = true;
-        let publish = (|| -> Result<()> {
+        let publish = (|| -> Result<String> {
             // Persist the directory entry before committing metadata where the OS supports it.
             #[cfg(unix)]
             File::open(&self.inner.files_dir)?.sync_all()?;
-            state.conn.execute(
+            // Publish the row and its public code together.
+            let tx = state
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            tx.execute(
                 "INSERT INTO shares (id, filename, size_bytes, uploaded_by, created_at,
                                      expires_at, remaining_downloads, password)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -136,22 +140,28 @@ impl Store {
                     metadata.password
                 ],
             )?;
-            Ok(())
+            let code = share_codes::reserve(&tx, &id)?;
+            tx.commit()?;
+            Ok(code)
         })();
-        if let Err(error) = publish {
-            // If SQLite's final outcome is uncertain, leave the file for startup reconciliation.
-            let row_exists = state.conn.query_row(
-                "SELECT EXISTS(SELECT 1 FROM shares WHERE id = ?1)",
-                [&id],
-                |row| row.get::<_, bool>(0),
-            );
-            if matches!(row_exists, Ok(false)) {
-                let _ = fs::remove_file(&target);
+        let code = match publish {
+            Ok(code) => code,
+            Err(error) => {
+                // If SQLite's final outcome is uncertain, leave the file for startup reconciliation.
+                let row_exists = state.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM shares WHERE id = ?1)",
+                    [&id],
+                    |row| row.get::<_, bool>(0),
+                );
+                if matches!(row_exists, Ok(false)) {
+                    let _ = fs::remove_file(&target);
+                }
+                return Err(error);
             }
-            return Err(error);
-        }
+        };
         Ok(Share {
             id,
+            code,
             filename: metadata.filename,
             size_bytes: metadata.size_bytes,
             created_at,

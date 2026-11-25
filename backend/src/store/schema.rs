@@ -2,12 +2,12 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use super::{Result, private_file};
+use super::{Result, private_file, share_codes};
 
 pub(super) fn open(path: &Path) -> Result<Connection> {
     // Create the database with private permissions before SQLite opens it.
     private_file(path, false)?;
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
          PRAGMA journal_mode = WAL;
@@ -22,6 +22,11 @@ pub(super) fn open(path: &Path) -> Result<Connection> {
              expires_at INTEGER CHECK (expires_at > created_at),
              remaining_downloads INTEGER CHECK (remaining_downloads >= 0),
              password TEXT
+         ) STRICT;
+
+         CREATE TABLE IF NOT EXISTS share_codes (
+             code TEXT PRIMARY KEY CHECK (length(code) = 6 AND code NOT GLOB '*[^A-Za-z0-9_-]*'),
+             share_id TEXT UNIQUE REFERENCES shares(id) ON DELETE SET NULL
          ) STRICT;
 
          CREATE TABLE IF NOT EXISTS download_links (
@@ -41,5 +46,6 @@ pub(super) fn open(path: &Path) -> Result<Connection> {
              ON download_links(share_id, expires_at);
          CREATE INDEX IF NOT EXISTS download_link_expiry ON download_links(expires_at);",
     )?;
+    share_codes::backfill(&mut conn)?;
     Ok(conn)
 }

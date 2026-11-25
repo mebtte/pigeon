@@ -1,6 +1,7 @@
 mod cleanup;
 mod listing;
 mod schema;
+mod share_codes;
 mod upload;
 
 #[cfg(test)]
@@ -21,6 +22,7 @@ use thiserror::Error;
 use crate::cooldown::PasswordCooldown;
 
 pub use listing::{ListedShare, SharePage};
+pub(crate) use share_codes::is_share_code;
 pub use upload::StagedUpload;
 
 const LINK_LIFETIME_SECONDS: i64 = 24 * 60 * 60;
@@ -43,6 +45,8 @@ pub enum StoreError {
     DataDirLocked,
     #[error("operating system random source failed: {0}")]
     Entropy(getrandom::Error),
+    #[error("could not allocate a unique share code")]
+    ShareCodeUnavailable,
     #[error("data filesystem error: {0}")]
     Io(#[from] io::Error),
     #[error("SQLite error: {0}")]
@@ -80,7 +84,8 @@ pub struct NewShare {
 
 #[derive(Debug)]
 pub struct Share {
-    pub id: String,
+    id: String,
+    pub code: String,
     pub filename: String,
     pub size_bytes: u64,
     pub created_at: i64,
@@ -183,8 +188,8 @@ impl Store {
         Ok(fs2::available_space(&self.inner.root)?)
     }
 
-    pub fn share(&self, id: &str) -> Result<Share> {
-        if !is_hex(id, SHARE_ID_BYTES) {
+    pub fn share(&self, code: &str) -> Result<Share> {
+        if !is_share_code(code) {
             return Err(StoreError::NotFound);
         }
         let state = self.inner.lock();
@@ -193,29 +198,30 @@ impl Store {
             .conn
             .query_row(
                 "SELECT id, filename, size_bytes, created_at, expires_at, remaining_downloads,
-                    password IS NOT NULL
-             FROM shares WHERE id = ?1 AND (expires_at IS NULL OR expires_at > ?2)
+                    password IS NOT NULL, code
+             FROM share_codes JOIN shares ON shares.id = share_codes.share_id
+             WHERE code = ?1 AND (expires_at IS NULL OR expires_at > ?2)
                 AND (remaining_downloads IS NULL OR remaining_downloads > 0)",
-                params![id, now],
+                params![code, now],
                 share_from_row,
             )
             .optional()?
             .ok_or(StoreError::NotFound)?;
-        self.inner.open_file(id, share.size_bytes)?;
+        self.inner.open_file(&share.id, share.size_bytes)?;
         Ok(share)
     }
 
-    pub fn issue_link(&self, id: &str, password: Option<&str>) -> Result<DownloadLink> {
-        self.issue_link_with_clock(id, password, Instant::now)
+    pub fn issue_link(&self, code: &str, password: Option<&str>) -> Result<DownloadLink> {
+        self.issue_link_with_clock(code, password, Instant::now)
     }
 
     fn issue_link_with_clock(
         &self,
-        id: &str,
+        code: &str,
         password: Option<&str>,
         attempt_now: impl FnOnce() -> Instant,
     ) -> Result<DownloadLink> {
-        if !is_hex(id, SHARE_ID_BYTES) {
+        if !is_share_code(code) {
             return Err(StoreError::NotFound);
         }
         let mut state = self.inner.lock();
@@ -226,22 +232,32 @@ impl Store {
         } = &mut *state;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let now = unix_seconds()?;
-        let (share_expiry, expected_password, filename, size_bytes): (
+        let (id, share_expiry, expected_password, filename, size_bytes): (
+            String,
             Option<i64>,
             Option<String>,
             String,
             u64,
         ) = tx
             .query_row(
-                "SELECT expires_at, password, filename, size_bytes FROM shares
-             WHERE id = ?1 AND (expires_at IS NULL OR expires_at > ?2)
+                "SELECT id, expires_at, password, filename, size_bytes
+             FROM share_codes JOIN shares ON shares.id = share_codes.share_id
+             WHERE code = ?1 AND (expires_at IS NULL OR expires_at > ?2)
                 AND (remaining_downloads IS NULL OR remaining_downloads > 0)",
-                params![id, now],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                params![code, now],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .optional()?
             .ok_or(StoreError::NotFound)?;
-        self.inner.open_file(id, size_bytes)?;
+        self.inner.open_file(&id, size_bytes)?;
         let issued_at = unix_seconds()?;
         if share_expiry.is_some_and(|deadline| deadline <= issued_at) {
             return Err(StoreError::NotFound);
@@ -249,7 +265,7 @@ impl Store {
         if let Some(expected) = expected_password.as_deref() {
             // Gate the actual password comparison per share while holding the store lock.
             password_cooldown
-                .check(id.to_owned(), attempt_now())
+                .check(id.clone(), attempt_now())
                 .map_err(StoreError::PasswordCooldown)?;
             if Some(expected) != password {
                 return Err(StoreError::InvalidPassword);
@@ -265,7 +281,7 @@ impl Store {
         tx.execute(
             "UPDATE shares SET remaining_downloads = remaining_downloads - 1
              WHERE id = ?1 AND remaining_downloads IS NOT NULL",
-            [id],
+            [&id],
         )?;
         tx.execute(
             "INSERT INTO download_links (token_hash, share_id, expires_at) VALUES (?1, ?2, ?3)",
@@ -332,6 +348,7 @@ fn checked_storage_io<T>(result: io::Result<T>) -> Result<T> {
 fn share_from_row(row: &Row<'_>) -> rusqlite::Result<Share> {
     Ok(Share {
         id: row.get(0)?,
+        code: row.get(7)?,
         filename: row.get(1)?,
         size_bytes: row.get(2)?,
         created_at: row.get(3)?,

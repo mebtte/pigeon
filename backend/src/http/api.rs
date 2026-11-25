@@ -8,7 +8,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::auth::LoginError;
+use crate::{auth::LoginError, store::is_share_code};
 
 use super::{App, error::HttpError, storage_work};
 
@@ -76,11 +76,7 @@ pub async fn extract_link(
     Path(id): Path<String>,
     payload: Result<Json<Extraction>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), HttpError> {
-    if id.len() != 32
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
+    if !is_share_code(&id) {
         return Err(HttpError::missing());
     }
     let Json(extraction) = payload.map_err(|_| HttpError::invalid())?;
