@@ -24,4 +24,4 @@ exec watchexec --restart --quiet --shell=none --debounce 300ms --poll=500ms \
     --watch "$pigeon_root/backend/src" --watch-non-recursive "$pigeon_root/backend" \
     --filter '/backend/src/**' --filter '/backend/Cargo.toml' \
     --filter '/backend/Cargo.lock' --filter '/backend/build.rs' \
-    -- cargo run --quiet --manifest-path "$pigeon_root/backend/Cargo.toml" -- "$@"
+    -- cargo run --quiet --manifest-path "$pigeon_root/backend/Cargo.toml" -- serve "$@"

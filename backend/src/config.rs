@@ -1,13 +1,9 @@
 use std::{collections::HashMap, path::PathBuf};
 
-use clap::Parser;
+use clap::Args;
 
-#[derive(Parser)]
-#[command(
-    version,
-    about = "Pigeon is an extremely simple file sharing service for self-hosting."
-)]
-pub struct Arguments {
+#[derive(Args)]
+pub struct ServeArguments {
     #[arg(
         long = "user",
         value_name = "USERNAME:PASSWORD",
@@ -37,16 +33,11 @@ pub struct Arguments {
     pub data: PathBuf,
 }
 
-impl Arguments {
+impl ServeArguments {
     pub fn accounts(&self) -> Result<HashMap<String, String>, &'static str> {
         let mut accounts = HashMap::new();
         for account in &self.users {
-            let (name, password) = account
-                .split_once(':')
-                .ok_or("--user must be USERNAME:PASSWORD")?;
-            if !valid_username(name) || password.is_empty() || password.len() > 1024 {
-                return Err("Invalid username or password in --user");
-            }
+            let (name, password) = parse_credentials(account)?;
             if accounts
                 .insert(name.to_owned(), password.to_owned())
                 .is_some()
@@ -60,6 +51,17 @@ impl Arguments {
     pub fn base_path(&self) -> Result<BasePath, &'static str> {
         self.base_path.parse()
     }
+}
+
+pub(crate) fn parse_credentials(value: &str) -> Result<(&str, &str), &'static str> {
+    // Split on the first colon so the password can contain additional colons.
+    let (name, password) = value
+        .split_once(':')
+        .ok_or("--user must be USERNAME:PASSWORD")?;
+    if !valid_username(name) || password.is_empty() || password.len() > 1024 {
+        return Err("Invalid username or password in --user");
+    }
+    Ok((name, password))
 }
 
 fn valid_username(name: &str) -> bool {
@@ -140,10 +142,20 @@ impl BasePath {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Arguments, Command};
+    use clap::Parser;
+
+    fn serve_args<const N: usize>(options: [&str; N]) -> Result<ServeArguments, clap::Error> {
+        let args = Arguments::try_parse_from(["pigeon", "serve"].into_iter().chain(options))?;
+        let Command::Serve(args) = args.command else {
+            unreachable!();
+        };
+        Ok(args)
+    }
 
     #[test]
     fn parses_max_file_size_in_bytes_and_supported_units() {
-        let args = Arguments::try_parse_from(["pigeon"]).unwrap();
+        let args = serve_args([]).unwrap();
         assert_eq!(args.max_file_size, None);
         for (value, bytes) in [
             ("128", 128),
@@ -153,7 +165,7 @@ mod tests {
             ("5 KiB", 5 * 1024),
             ("2mib", 2 * 1024 * 1024),
         ] {
-            let args = Arguments::try_parse_from(["pigeon", "--max-file-size", value]).unwrap();
+            let args = serve_args(["--max-file-size", value]).unwrap();
             assert_eq!(args.max_file_size, Some(bytes));
         }
         for value in [
@@ -165,10 +177,7 @@ mod tests {
             "9223372036854775808",
             "18446744073709551615MiB",
         ] {
-            assert!(
-                Arguments::try_parse_from(["pigeon", "--max-file-size", value]).is_err(),
-                "{value}"
-            );
+            assert!(serve_args(["--max-file-size", value]).is_err(), "{value}");
         }
     }
 
@@ -188,12 +197,19 @@ mod tests {
     }
 
     #[test]
-    fn splits_credentials_on_first_colon() {
-        let args = Arguments::try_parse_from(["pigeon", "--user", "alice:p:a", "--user", "bob:p"])
-            .unwrap();
+    fn validates_credentials_and_splits_on_the_first_colon() {
+        assert_eq!(parse_credentials("alice:p:a"), Ok(("alice", "p:a")));
+        for value in ["alice", "alice:", ":password", " alice:password"] {
+            assert!(parse_credentials(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn accepts_multiple_unique_accounts() {
+        let args = serve_args(["--user", "alice:p:a", "--user", "bob:p"]).unwrap();
         assert_eq!(args.accounts().unwrap()["alice"], "p:a");
-        let args = Arguments::try_parse_from(["pigeon", "--user", "alice:p", "--user", "alice:q"])
-            .unwrap();
+        assert_eq!(args.accounts().unwrap()["bob"], "p");
+        let args = serve_args(["--user", "alice:p", "--user", "alice:q"]).unwrap();
         assert!(args.accounts().is_err());
     }
 }

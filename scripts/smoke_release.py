@@ -3,6 +3,7 @@
 import argparse
 from contextlib import contextmanager
 from html.parser import HTMLParser
+from io import BytesIO
 from pathlib import Path
 import json
 import re
@@ -15,11 +16,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
+from zipfile import ZipFile
 
 BASE = "/pigeon"
 USERNAME = "smoke"
 PASSWORD = "smoke-password"
 SHARE_PASSWORD = "P1GE0N42"
+CLI_ACCOUNTS = (("smoke-cli", "cli:password"), ("smoke-zip", "zip-password"))
 PAYLOAD = b"hello pigeon\n"
 OPENER = build_opener(ProxyHandler({}))
 
@@ -171,6 +174,65 @@ def check_release(origin):
     assert data == PAYLOAD, data
 
 
+def check_share_cli(binary, origin):
+    def run_share(account, inputs, answers, *, trailing_slash=False):
+        endpoint = f"{origin}{BASE}" + ("/" if trailing_slash else "")
+        process = subprocess.run(
+            [str(binary), "share", "--endpoint", endpoint, "--user", ":".join(account), "--", *inputs],
+            input=answers,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            cwd=root,
+            timeout=30,
+        )
+        assert process.returncode == 0, process.stderr
+        return process.stdout.splitlines()
+
+    def get_share_id(url):
+        assert url.startswith(f"{origin}{BASE}/#/sharing/"), url
+        return share_id_from_url(url.removeprefix(origin))
+
+    with tempfile.TemporaryDirectory(prefix="pigeon-share-") as directory:
+        root = Path(directory)
+        filename = "-测试.txt"
+        (root / filename).write_bytes(PAYLOAD)
+        (root / "folder").mkdir()
+        (root / "folder" / "nested.txt").write_bytes(b"zip payload")
+
+        assert run_share(CLI_ACCOUNTS[0], [filename], "\n\n\nn\n") == []
+        (url,) = run_share(CLI_ACCOUNTS[0], [filename], "\n\n\ny\n")
+        share_id = get_share_id(url)
+        path = f"{BASE}/api/shares/{share_id}"
+        _, body = request(origin, path)
+        assert json.loads(body) == {
+            "id": share_id,
+            "requires_password": False,
+            "filename": filename,
+            "size_bytes": len(PAYLOAD),
+        }, body
+        download = post_json(origin, f"{path}/download-links", {}, status=201)
+        assert request(origin, download["download_url"])[1] == PAYLOAD
+
+        url, url_with_password = run_share(
+            CLI_ACCOUNTS[1],
+            [filename, "folder"],
+            f"forever\n1\n{SHARE_PASSWORD}\ny\n",
+            trailing_slash=True,
+        )
+        assert url_with_password == f"{url}?password={SHARE_PASSWORD}", url_with_password
+        path = f"{BASE}/api/shares/{get_share_id(url)}"
+        extraction = post_json(
+            origin, f"{path}/download-links", {"password": SHARE_PASSWORD}, status=201
+        )
+        assert extraction["filename"] == "files.zip", extraction
+        request(origin, path, status=404)
+        _, archive = request(origin, extraction["download_url"])
+        with ZipFile(BytesIO(archive)) as zipped:
+            assert zipped.read(filename) == PAYLOAD
+            assert zipped.read("folder/nested.txt") == b"zip payload"
+
+
 def wait_for_server(origin, process=None):
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
@@ -197,6 +259,7 @@ def start_standalone(binary, *, accounts=((USERNAME, PASSWORD),)):
             port = reserving.getsockname()[1]
         arguments = [
             str(executable),
+            "serve",
             "--port",
             str(port),
             "--data",
@@ -233,8 +296,10 @@ def main():
         wait_for_server(origin)
         check_release(origin)
     else:
-        with start_standalone(args.binary.resolve(strict=True)) as origin:
+        binary = args.binary.resolve(strict=True)
+        with start_standalone(binary, accounts=((USERNAME, PASSWORD), *CLI_ACCOUNTS)) as origin:
             check_release(origin)
+            check_share_cli(binary, origin)
     print("Release smoke test passed")
 
 

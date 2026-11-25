@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p docker-context/rootfs/data
+mkdir -p docker-context/rootfs/data docker-context/rootfs/tmp
 : > docker-context/rootfs/data/.keep
+: > docker-context/rootfs/tmp/.keep
 
 for architecture in "$@"; do
   case "$architecture" in
