@@ -29,7 +29,7 @@ pub async fn run(args: ServeArguments) -> Result<(), Box<dyn std::error::Error>>
     )?);
 
     let cleanup = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
         interval.tick().await; // Store::open already ran cleanup.
         loop {
             interval.tick().await;

@@ -67,13 +67,13 @@ fn print_links(link: &reqwest::Url, password: Option<&str>) -> io::Result<()> {
 
     // Keep labels on the terminal so each stdout line remains a copyable URL.
     if show_labels {
-        let _ = writeln!(stderr.lock(), "\nShare created\n\nShare link");
+        let _ = writeln!(stderr.lock(), "\nShare link:");
     }
     writeln!(output, "{link}")?;
     if let Some(password) = password {
         if show_labels {
             output.flush()?;
-            let _ = writeln!(stderr.lock(), "\nShare link with password");
+            let _ = writeln!(stderr.lock(), "\nShare link with password:");
         }
         writeln!(output, "{}", link_with_password(link, password))?;
     }
